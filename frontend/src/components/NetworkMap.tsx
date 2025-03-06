@@ -74,18 +74,24 @@ const NetworkMap: React.FC<NetworkMapProps> = ({ devices, onNodeClick }) => {
         return;
       }
       
-      // D3グラフを作成
+      // SVG要素のサイズを正確に取得
       const svg = d3.select(svgRef.current);
       svg.selectAll("*").remove();
       
-      const width = svgRef.current.clientWidth || 600;
-      const height = svgRef.current.clientHeight || 400;
+      // クライアント幅・高さを取得し、0より小さければデフォルト値を使用
+      const width = Math.max(svgRef.current.clientWidth, 300);
+      const height = Math.max(svgRef.current.clientHeight, 300);
+      
+      console.log("SVG dimensions:", width, "x", height);
       
       // ノードとリンクのデータを準備
       const nodes: CustomNodeDatum[] = devices.map(device => ({
         id: device.ip,
         device: device,
         r: getNodeRadius(device),
+        // 初期位置をランダムに設定して中央付近に分散させる
+        x: width * 0.25 + Math.random() * width * 0.5,
+        y: height * 0.25 + Math.random() * height * 0.5
       }));
       
       // Make sure all connected_to IPs exist in our devices list
@@ -104,12 +110,40 @@ const NetworkMap: React.FC<NetworkMapProps> = ({ devices, onNodeClick }) => {
         });
       });
       
+      // ゲートウェイノードを見つける
+      const gatewayNode = nodes.find(n => n.device.is_gateway);
+      
+      // ゲートウェイノードがあれば、中央に固定
+      if (gatewayNode) {
+        gatewayNode.fx = width / 2;
+        gatewayNode.fy = height / 2;
+      }
+      
       // シミュレーションを作成
       const simulation = d3.forceSimulation<CustomNodeDatum>(nodes)
-        .force('charge', d3.forceManyBody().strength(-350))
-        .force('center', d3.forceCenter(width / 2, height / 2))
-        .force('link', d3.forceLink<CustomNodeDatum, CustomLinkDatum>(links).id(d => d.id).distance(120))
-        .force('collide', d3.forceCollide().radius(d => (d as CustomNodeDatum).r * 1.8));
+        // 反発力を強めに設定（小さな負の値で強い反発）
+        .force('charge', d3.forceManyBody().strength(-400))
+        // 中心力をより強く設定
+        .force('center', d3.forceCenter(width / 2, height / 2).strength(0.15))
+        // リンクの距離を適度に設定
+        .force('link', d3.forceLink<CustomNodeDatum, CustomLinkDatum>(links)
+          .id(d => d.id)
+          .distance(d => {
+            // ゲートウェイへのリンクは長めにする
+            const source = d.source as CustomNodeDatum;
+            const target = d.target as CustomNodeDatum;
+            if (source.device.is_gateway || target.device.is_gateway) {
+              return 150;
+            }
+            return 100;
+          }))
+        // 衝突回避を強めに設定
+        .force('collide', d3.forceCollide().radius(d => (d as CustomNodeDatum).r * 2));
+      
+      // 最初にいくつかのtickを実行して配置を安定させる
+      for (let i = 0; i < 30; i++) {
+        simulation.tick();
+      }
       
       // リンクを描画
       const link = svg.append('g')
@@ -228,10 +262,16 @@ const NetworkMap: React.FC<NetworkMapProps> = ({ devices, onNodeClick }) => {
       // 境界制約を追加（ノードが画面外に出ないようにする）
       simulation.on('tick', () => {
         nodes.forEach(node => {
-          node.x = Math.max(node.r, Math.min(width - node.r, node.x || 0));
-          node.y = Math.max(node.r, Math.min(height - node.r, node.y || 0));
+          // 境界チェックをより緩やかに設定
+          // 半径分だけ内側ではなく、少しはみ出ても良いようにする
+          const margin = node.r * 0.5;
+          node.x = Math.max(margin, Math.min(width - margin, node.x || 0));
+          node.y = Math.max(margin, Math.min(height - margin, node.y || 0));
         });
       });
+      
+      // シミュレーションの活性度を設定（より長く動かす）
+      simulation.alpha(1).alphaDecay(0.01);
       
       // ドラッグ関連の関数
       function dragstarted(event: d3.D3DragEvent<SVGGElement, CustomNodeDatum, CustomNodeDatum>, d: CustomNodeDatum) {
@@ -247,8 +287,12 @@ const NetworkMap: React.FC<NetworkMapProps> = ({ devices, onNodeClick }) => {
       
       function dragended(event: d3.D3DragEvent<SVGGElement, CustomNodeDatum, CustomNodeDatum>, d: CustomNodeDatum) {
         if (!event.active) simulation.alphaTarget(0);
-        d.fx = null;
-        d.fy = null;
+        
+        // ゲートウェイ以外はドラッグ終了時に固定を解除
+        if (!d.device.is_gateway) {
+          d.fx = null;
+          d.fy = null;
+        }
       }
       
       // ズーム機能を追加
@@ -259,6 +303,14 @@ const NetworkMap: React.FC<NetworkMapProps> = ({ devices, onNodeClick }) => {
         });
       
       svg.call(zoom);
+      
+      // SVGをクリックした時にズームをリセット
+      svg.on('dblclick.zoom', () => {
+        svg.transition().duration(750).call(
+          zoom.transform,
+          d3.zoomIdentity
+        );
+      });
       
       // Clean up simulation on unmount
       return () => {
