@@ -27,6 +27,8 @@ interface CustomLinkDatum extends d3.SimulationLinkDatum<CustomNodeDatum> {
 
 const NetworkMap: React.FC<NetworkMapProps> = ({ devices, onNodeClick }) => {
   const svgRef = useRef<SVGSVGElement | null>(null);
+  const containerRef = useRef<HTMLDivElement>(null);
+  const [dimensions, setDimensions] = useState({ width: 600, height: 400 });
   const [error, setError] = useState<string | null>(null);
   
   // ノードの半径を調整する関数
@@ -62,46 +64,65 @@ const NetworkMap: React.FC<NetworkMapProps> = ({ devices, onNodeClick }) => {
     
     return '#10b981'; // その他は通常の緑
   };
-  
+
+  // コンテナのリサイズを監視
   useEffect(() => {
-    if (!svgRef.current) return;
+    const updateDimensions = () => {
+      if (containerRef.current) {
+        const { width, height } = containerRef.current.getBoundingClientRect();
+        console.log("Container dimensions:", width, "x", height);
+        setDimensions({ width, height });
+      }
+    };
+
+    // 初期サイズの設定
+    updateDimensions();
+
+    // リサイズイベントのリスナーを設定
+    window.addEventListener('resize', updateDimensions);
+    
+    return () => {
+      window.removeEventListener('resize', updateDimensions);
+    };
+  }, []);
+  
+  // D3.jsでネットワークマップを描画
+  useEffect(() => {
+    if (!svgRef.current || devices.length === 0) return;
     
     try {
-      if (devices.length === 0) {
-        // Clear the SVG if no devices
-        const svg = d3.select(svgRef.current);
-        svg.selectAll("*").remove();
-        return;
-      }
-      
-      // SVG要素のサイズを正確に取得
+      // SVG要素を選択し、内容をクリア
       const svg = d3.select(svgRef.current);
       svg.selectAll("*").remove();
       
-      // クライアント幅・高さを取得し、0より小さければデフォルト値を使用
-      const width = Math.max(svgRef.current.clientWidth, 300);
-      const height = Math.max(svgRef.current.clientHeight, 300);
+      // SVGのサイズを明示的に設定
+      svg
+        .attr("width", dimensions.width)
+        .attr("height", dimensions.height)
+        .attr("viewBox", [0, 0, dimensions.width, dimensions.height])
+        .style("outline", "1px solid lightgray"); // デバッグ用の境界線
       
-      console.log("SVG dimensions:", width, "x", height);
+      console.log("SVG dimensions set to:", dimensions.width, "x", dimensions.height);
       
       // ノードとリンクのデータを準備
-      const nodes: CustomNodeDatum[] = devices.map(device => ({
+      const nodes: CustomNodeDatum[] = devices.map((device, i) => ({
         id: device.ip,
         device: device,
         r: getNodeRadius(device),
-        // 初期位置をランダムに設定して中央付近に分散させる
-        x: width * 0.25 + Math.random() * width * 0.5,
-        y: height * 0.25 + Math.random() * height * 0.5
+        // 明示的な初期位置を設定
+        x: dimensions.width / 2 + 100 * Math.cos(2 * Math.PI * i / devices.length),
+        y: dimensions.height / 2 + 100 * Math.sin(2 * Math.PI * i / devices.length)
       }));
       
-      // Make sure all connected_to IPs exist in our devices list
-      const deviceIpSet = new Set(devices.map(d => d.ip));
-      const links: CustomLinkDatum[] = [];
+      // デバイスのIPからノードへのマッピングを作成
+      const nodeMap = new Map<string, CustomNodeDatum>();
+      nodes.forEach(node => nodeMap.set(node.id, node));
       
+      // リンクの作成
+      const links: CustomLinkDatum[] = [];
       devices.forEach(device => {
         device.connected_to.forEach(targetIp => {
-          // Only add links to IPs that exist in our device list
-          if (deviceIpSet.has(targetIp)) {
+          if (nodeMap.has(targetIp)) {
             links.push({
               source: device.ip,
               target: targetIp,
@@ -110,217 +131,189 @@ const NetworkMap: React.FC<NetworkMapProps> = ({ devices, onNodeClick }) => {
         });
       });
       
-      // ゲートウェイノードを見つける
+      // ゲートウェイノードを中心に固定
       const gatewayNode = nodes.find(n => n.device.is_gateway);
-      
-      // ゲートウェイノードがあれば、中央に固定
       if (gatewayNode) {
-        gatewayNode.fx = width / 2;
-        gatewayNode.fy = height / 2;
+        gatewayNode.fx = dimensions.width / 2;
+        gatewayNode.fy = dimensions.height / 2;
+        console.log("Gateway node fixed at center:", gatewayNode.fx, gatewayNode.fy);
       }
       
-      // シミュレーションを作成
-      const simulation = d3.forceSimulation<CustomNodeDatum>(nodes)
-        // 反発力を強めに設定（小さな負の値で強い反発）
-        .force('charge', d3.forceManyBody().strength(-400))
-        // 中心力をより強く設定
-        .force('center', d3.forceCenter(width / 2, height / 2).strength(0.15))
-        // リンクの距離を適度に設定
-        .force('link', d3.forceLink<CustomNodeDatum, CustomLinkDatum>(links)
-          .id(d => d.id)
-          .distance(d => {
-            // ゲートウェイへのリンクは長めにする
-            const source = d.source as CustomNodeDatum;
-            const target = d.target as CustomNodeDatum;
-            if (source.device.is_gateway || target.device.is_gateway) {
-              return 150;
-            }
-            return 100;
-          }))
-        // 衝突回避を強めに設定
-        .force('collide', d3.forceCollide().radius(d => (d as CustomNodeDatum).r * 2));
-      
-      // 最初にいくつかのtickを実行して配置を安定させる
-      for (let i = 0; i < 30; i++) {
-        simulation.tick();
-      }
+      // コンテナを作成
+      const container = svg.append("g");
       
       // リンクを描画
-      const link = svg.append('g')
-        .selectAll<SVGLineElement, CustomLinkDatum>('line')
+      const link = container.append("g")
+        .attr("stroke", "#999")
+        .attr("stroke-opacity", 0.6)
+        .selectAll("line")
         .data(links)
-        .enter()
-        .append('line')
-        .attr('stroke', '#999')
-        .attr('stroke-opacity', 0.6)
-        .attr('stroke-width', d => {
-          // ゲートウェイへの接続は太く表示
-          const source = d.source as CustomNodeDatum;
-          const target = d.target as CustomNodeDatum;
-          return (source.device.is_gateway || target.device.is_gateway) ? 3 : 2;
+        .join("line")
+        .attr("stroke-width", d => {
+          const source = typeof d.source === 'string' ? nodeMap.get(d.source) : d.source;
+          const target = typeof d.target === 'string' ? nodeMap.get(d.target) : d.target;
+          return ((source as CustomNodeDatum).device.is_gateway || (target as CustomNodeDatum).device.is_gateway) ? 3 : 2;
         });
       
       // ノードグループを作成
-      const node = svg.append('g')
-        .selectAll<SVGGElement, CustomNodeDatum>('.node')
+      const node = container.append("g")
+        .selectAll("g")
         .data(nodes)
-        .enter()
-        .append('g')
-        .attr('class', 'node')
-        .on('click', (event, d) => {
+        .join("g")
+        .attr("cursor", "pointer")
+        .on("click", (event, d) => {
           event.stopPropagation();
           onNodeClick(d.device);
-        })
-        .call(d3.drag<SVGGElement, CustomNodeDatum>()
-          .on('start', dragstarted)
-          .on('drag', dragged)
-          .on('end', dragended));
+        });
       
       // ノード円を描画
-      node.append('circle')
-        .attr('r', d => d.r)
-        .attr('fill', d => getNodeColor(d.device))
-        .attr('stroke', '#fff')
-        .attr('stroke-width', 2)
-        .attr('opacity', 0.9);
+      node.append("circle")
+        .attr("r", d => d.r)
+        .attr("fill", d => getNodeColor(d.device))
+        .attr("stroke", "#fff")
+        .attr("stroke-width", 2);
       
-      // ゲートウェイアイコンを追加（オプション）
+      // ゲートウェイアイコン
       node.filter(d => d.device.is_gateway)
-        .append('text')
-        .attr('text-anchor', 'middle')
-        .attr('dominant-baseline', 'central')
-        .attr('fill', 'white')
-        .attr('font-size', 12)
-        .attr('font-weight', 'bold')
-        .text('G');
+        .append("text")
+        .attr("text-anchor", "middle")
+        .attr("dominant-baseline", "central")
+        .attr("fill", "white")
+        .attr("font-size", 12)
+        .attr("font-weight", "bold")
+        .text("G");
       
       // ラベルを追加
-      node.append('text')
-        .attr('dy', d => d.r + 12)
-        .attr('text-anchor', 'middle')
-        .attr('fill', '#4b5563')
-        .attr('font-size', d => d.device.is_gateway ? 14 : 12)
-        .attr('font-weight', d => d.device.is_gateway ? 'bold' : 'normal')
+      node.append("text")
+        .attr("dy", d => d.r + 12)
+        .attr("text-anchor", "middle")
+        .attr("fill", "#4b5563")
+        .attr("font-size", d => d.device.is_gateway ? 14 : 12)
+        .attr("font-weight", d => d.device.is_gateway ? "bold" : "normal")
         .text(d => {
           const device = d.device;
-          if (device.hostname && device.hostname !== 'unknown') {
-            // ホスト名が長すぎる場合は短縮
+          if (device.hostname && device.hostname !== "unknown") {
             return device.hostname.length > 15 
-              ? device.hostname.substring(0, 12) + '...'
+              ? device.hostname.substring(0, 12) + "..."
               : device.hostname;
           } else {
-            // IPのみ表示する場合は最後のオクテットだけ
-            const ipParts = device.ip.split('.');
+            const ipParts = device.ip.split(".");
             return ipParts[3];
           }
         });
       
-      // マウスオーバー時のツールチップ
-      node.append('title')
+      // ツールチップ
+      node.append("title")
         .text(d => {
           const device = d.device;
           let tooltip = `IP: ${device.ip}\nMAC: ${device.mac}`;
-          
-          if (device.hostname) {
-            tooltip += `\nホスト名: ${device.hostname}`;
-          }
-          
-          if (device.manufacturer) {
-            tooltip += `\nメーカー: ${device.manufacturer}`;
-          }
-          
-          if (device.is_gateway) {
-            tooltip += '\n(ゲートウェイ)';
-          }
-          
+          if (device.hostname) tooltip += `\nホスト名: ${device.hostname}`;
+          if (device.manufacturer) tooltip += `\nメーカー: ${device.manufacturer}`;
+          if (device.is_gateway) tooltip += "\n(ゲートウェイ)";
           return tooltip;
         });
       
-      // シミュレーションの更新時の処理
-      simulation.on('tick', () => {
+      // ドラッグ挙動の定義
+      const drag = d3.drag<SVGGElement, CustomNodeDatum>()
+        .on("start", (event, d) => {
+          if (!event.active) simulation.alphaTarget(0.3).restart();
+          d.fx = d.x;
+          d.fy = d.y;
+        })
+        .on("drag", (event, d) => {
+          d.fx = event.x;
+          d.fy = event.y;
+        })
+        .on("end", (event, d) => {
+          if (!event.active) simulation.alphaTarget(0);
+          if (!d.device.is_gateway) {
+            d.fx = null;
+            d.fy = null;
+          }
+        });
+      
+      // ドラッグ機能を適用
+      (node as d3.Selection<SVGGElement, CustomNodeDatum, SVGGElement, unknown>).call(drag);
+      
+      // シミュレーションを作成
+      const simulation = d3.forceSimulation<CustomNodeDatum>(nodes)
+        .force("link", d3.forceLink<CustomNodeDatum, CustomLinkDatum>(links)
+          .id(d => d.id)
+          .distance(d => {
+            // ゲートウェイへのリンクは長めにする
+            const source = typeof d.source === 'string' ? nodeMap.get(d.source) : d.source;
+            const target = typeof d.target === 'string' ? nodeMap.get(d.target) : d.target;
+            return ((source as CustomNodeDatum).device.is_gateway || (target as CustomNodeDatum).device.is_gateway) ? 150 : 100;
+          }))
+        .force("charge", d3.forceManyBody().strength(-500))
+        .force("center", d3.forceCenter(dimensions.width / 2, dimensions.height / 2).strength(0.3))
+        .force("collision", d3.forceCollide().radius(d => (d as CustomNodeDatum).r * 1.5));
+      
+      // シミュレーションを一度予熱
+      console.log("Pre-heating simulation...");
+      for (let i = 0; i < 50; i++) {
+        simulation.tick();
+      }
+      
+      // 境界制約を設定
+      simulation.on("tick", () => {
+        nodes.forEach(d => {
+          if (d.fx === undefined) {
+            d.x = Math.max(d.r, Math.min(dimensions.width - d.r, d.x || 0));
+            d.y = Math.max(d.r, Math.min(dimensions.height - d.r, d.y || 0));
+          }
+        });
+        
         link
-          .attr('x1', d => {
-            const src = d.source as CustomNodeDatum;
-            return src.x || 0;
+          .attr("x1", d => {
+            const source = typeof d.source === 'string' ? nodeMap.get(d.source) : d.source;
+            return (source as CustomNodeDatum).x || 0;
           })
-          .attr('y1', d => {
-            const src = d.source as CustomNodeDatum;
-            return src.y || 0;
+          .attr("y1", d => {
+            const source = typeof d.source === 'string' ? nodeMap.get(d.source) : d.source;
+            return (source as CustomNodeDatum).y || 0;
           })
-          .attr('x2', d => {
-            const tgt = d.target as CustomNodeDatum;
-            return tgt.x || 0;
+          .attr("x2", d => {
+            const target = typeof d.target === 'string' ? nodeMap.get(d.target) : d.target;
+            return (target as CustomNodeDatum).x || 0;
           })
-          .attr('y2', d => {
-            const tgt = d.target as CustomNodeDatum;
-            return tgt.y || 0;
+          .attr("y2", d => {
+            const target = typeof d.target === 'string' ? nodeMap.get(d.target) : d.target;
+            return (target as CustomNodeDatum).y || 0;
           });
         
-        node.attr('transform', d => `translate(${d.x || 0},${d.y || 0})`);
+        node.attr("transform", d => `translate(${d.x},${d.y})`);
       });
-      
-      // 境界制約を追加（ノードが画面外に出ないようにする）
-      simulation.on('tick', () => {
-        nodes.forEach(node => {
-          // 境界チェックをより緩やかに設定
-          // 半径分だけ内側ではなく、少しはみ出ても良いようにする
-          const margin = node.r * 0.5;
-          node.x = Math.max(margin, Math.min(width - margin, node.x || 0));
-          node.y = Math.max(margin, Math.min(height - margin, node.y || 0));
-        });
-      });
-      
-      // シミュレーションの活性度を設定（より長く動かす）
-      simulation.alpha(1).alphaDecay(0.01);
-      
-      // ドラッグ関連の関数
-      function dragstarted(event: d3.D3DragEvent<SVGGElement, CustomNodeDatum, CustomNodeDatum>, d: CustomNodeDatum) {
-        if (!event.active) simulation.alphaTarget(0.3).restart();
-        d.fx = d.x;
-        d.fy = d.y;
-      }
-      
-      function dragged(event: d3.D3DragEvent<SVGGElement, CustomNodeDatum, CustomNodeDatum>, d: CustomNodeDatum) {
-        d.fx = event.x;
-        d.fy = event.y;
-      }
-      
-      function dragended(event: d3.D3DragEvent<SVGGElement, CustomNodeDatum, CustomNodeDatum>, d: CustomNodeDatum) {
-        if (!event.active) simulation.alphaTarget(0);
-        
-        // ゲートウェイ以外はドラッグ終了時に固定を解除
-        if (!d.device.is_gateway) {
-          d.fx = null;
-          d.fy = null;
-        }
-      }
       
       // ズーム機能を追加
       const zoom = d3.zoom<SVGSVGElement, unknown>()
         .scaleExtent([0.5, 3])
-        .on('zoom', (event) => {
-          svg.selectAll('g').attr('transform', event.transform);
+        .on("zoom", (event) => {
+          container.attr("transform", event.transform);
         });
       
       svg.call(zoom);
       
-      // SVGをクリックした時にズームをリセット
-      svg.on('dblclick.zoom', () => {
+      // SVGをダブルクリックしたときにズームをリセット
+      svg.on("dblclick.zoom", () => {
         svg.transition().duration(750).call(
           zoom.transform,
           d3.zoomIdentity
         );
       });
       
-      // Clean up simulation on unmount
+      // シミュレーションを適度な温度で開始
+      simulation.alpha(0.5).alphaDecay(0.05).restart();
+      
+      // クリーンアップ
       return () => {
         simulation.stop();
       };
     } catch (err) {
-      console.error('Error rendering network map:', err);
-      setError(err instanceof Error ? err.message : 'ネットワークマップの描画中にエラーが発生しました');
+      console.error("Error rendering network map:", err);
+      setError(err instanceof Error ? err.message : "ネットワークマップの描画中にエラーが発生しました");
     }
-  }, [devices, onNodeClick]);
+  }, [devices, dimensions, onNodeClick]);
   
   if (error) {
     return (
@@ -331,8 +324,8 @@ const NetworkMap: React.FC<NetworkMapProps> = ({ devices, onNodeClick }) => {
   }
   
   return (
-    <div className="w-full h-full bg-gray-50 rounded-lg overflow-hidden">
-      <svg ref={svgRef} width="100%" height="100%" />
+    <div ref={containerRef} className="w-full h-full bg-gray-50 rounded-lg overflow-hidden">
+      <svg ref={svgRef} className="w-full h-full" />
     </div>
   );
 };
