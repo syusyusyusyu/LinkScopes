@@ -1,0 +1,28 @@
+# Python仮想環境
+venv/
+backend/venv/
+**/venv/
+__pycache__/
+*.py[cod]
+*$py.class
+
+# ログファイル
+*.log
+
+# フロントエンド関連
+node_modules/
+/dist
+/build
+.env.local
+.env.development.local
+.env.test.local
+.env.production.local
+npm-debug.log*
+yarn-debug.log*
+yarn-error.log*
+
+# 開発環境関連
+.idea/
+.vscode/
+*.swp
+.DS_Store
