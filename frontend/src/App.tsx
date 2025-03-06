@@ -1,5 +1,5 @@
 // frontend/src/App.tsx
-import React, { useState } from 'react';
+import React, { useState, useCallback } from 'react';
 import { useWebSocket } from './hooks/useWebSocket';
 import NetworkMap from './components/NetworkMap';
 import DeviceCard from './components/DeviceCard';
@@ -12,24 +12,35 @@ const App: React.FC = () => {
   const [selectedDevice, setSelectedDevice] = useState<Device | null>(null);
   const [ipRange, setIpRange] = useState('192.168.1.0/24');
   const [isLoading, setIsLoading] = useState(false);
+  const [scanError, setScanError] = useState<string | null>(null);
   
-  const handleScan = async () => {
+  const handleScan = useCallback(async () => {
     setIsLoading(true);
+    setScanError(null);
+    
     try {
       await triggerScan(ipRange);
-      setTimeout(requestUpdate, 3000); // スキャン完了を少し待ってからデータを更新
+      // Wait a bit for the scan to complete before requesting updated data
+      setTimeout(() => {
+        requestUpdate();
+        // Request an additional update after more time to ensure we get complete results
+        setTimeout(requestUpdate, 3000);
+      }, 2000);
+    } catch (error) {
+      console.error("Scan failed:", error);
+      setScanError(error instanceof Error ? error.message : 'スキャンに失敗しました');
     } finally {
       setIsLoading(false);
     }
-  };
+  }, [ipRange, requestUpdate]);
   
-  const handleNodeClick = (device: Device) => {
+  const handleNodeClick = useCallback((device: Device) => {
     setSelectedDevice(device);
-  };
+  }, []);
   
-  const closeDetails = () => {
+  const closeDetails = useCallback(() => {
     setSelectedDevice(null);
-  };
+  }, []);
   
   return (
     <div className="min-h-screen bg-gray-100">
@@ -68,11 +79,16 @@ const App: React.FC = () => {
                     placeholder="例: 192.168.1.0/24"
                   />
                 </div>
+                {scanError && (
+                  <div className="text-red-500 text-sm py-1">
+                    {scanError}
+                  </div>
+                )}
                 <button
                   onClick={handleScan}
                   disabled={isLoading}
                   className={`w-full py-2 px-4 rounded-md text-white font-medium ${
-                    isLoading ? 'bg-blue-400' : 'bg-blue-600 hover:bg-blue-700'
+                    isLoading ? 'bg-blue-400 cursor-not-allowed' : 'bg-blue-600 hover:bg-blue-700'
                   }`}
                 >
                   {isLoading ? 'スキャン中...' : 'スキャン開始'}
